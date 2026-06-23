@@ -1,0 +1,327 @@
+//@version=5
+indicator("Sentiment", overlay = true, timeframe = "", timeframe_gaps = false)
+
+InSession(sess) =>
+    na(time(timeframe.period, sess)) == false
+sessionHours = input.session(defval="0915-1520", title="Exit time")
+weekendsStr = ":1234567" 
+sec=InSession(sessionHours + weekendsStr)
+//input controls for algo
+
+
+simple_filter(float source, int length, bool duel_filter)=>
+    switch duel_filter
+        false => ta.wma(source, length)
+        true => ta.wma(ta.sma(source, length), length)
+
+sr_ma(float source = close, int output_smoothing = 3, int trigger_smoothing = 1, int atr_length = 50, float multiplier = 1, string range_switch = "Body", bool duel_filter = false)=>
+    candle_top = range_switch != "Body" ? high : math.max(open, close)
+    candle_bottom = range_switch != "Body" ? low : math.min(open, close)
+
+    smooth_top = ta.sma(candle_top, trigger_smoothing)
+    smooth_bottom = ta.sma(candle_bottom, trigger_smoothing)
+
+    tr = candle_top - candle_bottom
+    atr = ta.sma(tr, atr_length)
+
+    var float sr_ma = na
+    var float current_range = na
+    var float top_range = na
+    var float bottom_range = na
+
+    flag = smooth_top > top_range or smooth_bottom < bottom_range or na(current_range)
+
+    if flag
+        sr_ma := source
+        current_range := atr * multiplier
+        top_range := sr_ma + current_range
+        bottom_range := sr_ma - current_range
+        
+    out = simple_filter(sr_ma, output_smoothing, duel_filter)
+    smooth_top_range = simple_filter(top_range, output_smoothing, duel_filter)
+    smooth_bottom_range = simple_filter(bottom_range, output_smoothing, duel_filter)
+
+    [out, smooth_top_range, smooth_bottom_range]
+
+source = input.source(close, "Source", group = "Settings")
+output_smoothing = input.int(20, "Length", minval = 0, group = "Settings") + 1
+use_double = input.bool(true, "Double Filter", group = "Settings")
+smoothing = input.int(4, "Trigger Smoothing", minval = 0, group = "Settings") + 1
+atr_length = input.int(200, "ATR Length", minval = 1, group = "Settings")
+multiplier = input.float(6, "Range Multiplier", minval = 0, step = 0.125, group = "Settings")
+range_switch = input.string("Body", "Range Style", ["Body", "Wick"], group = "Settings")
+
+style = input.string("MA Direction", "Color Style", ["MA Direction", "MA Cross", "Solid"], group = "Color")
+bullish_color = input.color(color.rgb(33, 255, 120), "Bullish Color", group = "Color")
+bearish_color = input.color(color.rgb(255, 33, 33), "Bearish Color", group = "Color")
+
+neutral_color = input.color(color.rgb(137, 137, 137), "Neutral Color", "This doubles as the solid color.", group = "Color")
+
+[sr_ma, top_range, bottom_range] = sr_ma(source, output_smoothing, smoothing, atr_length, multiplier, range_switch, use_double)
+
+var color ma_delta = na
+var color ma_cross = na
+
+plot_neutral = high > sr_ma and low < sr_ma
+plot_bullish = low > sr_ma
+plot_bearish = high < sr_ma
+
+if plot_bullish 
+    ma_cross := bullish_color
+
+if plot_bearish
+    ma_cross := bearish_color
+
+if plot_neutral 
+    ma_cross := neutral_color
+
+ma_delta_neutral = sr_ma - nz(sr_ma[1]) == 0
+ma_delta_bullish = sr_ma - nz(sr_ma[1]) > 0
+ma_delta_bearish = sr_ma - nz(sr_ma[1]) < 0
+
+if ma_delta_bullish
+    ma_delta := bullish_color
+
+if ma_delta_bearish
+    ma_delta := bearish_color
+
+if ma_delta_neutral 
+    ma_delta := neutral_color
+
+ma_color = style == "MA Cross"? ma_cross : style == "MA Direction" ? ma_delta : neutral_color
+
+alpha = color.new(color.red, 100)
+
+ma = plot(sr_ma, "SR MA", ma_color, 3)
+top = plot(top_range, "Top Range", alpha)
+bottom = plot(bottom_range, "Bottom Range", alpha)
+
+
+use_hma_indicator = input(true)
+length = input.int(9, minval=1)
+src = input(close, title="Source")
+hullma = ta.wma(2*ta.wma(src, length/2)-ta.wma(src, length), math.floor(math.sqrt(length)))
+plot(hullma,linewidth = 2)
+
+fill(ma, top, top_value = top_range, bottom_value = sr_ma, bottom_color = color.new(ma_color, 82), top_color = alpha)
+fill(ma, bottom, top_value = sr_ma, bottom_value = bottom_range, top_color = color.new(ma_color, 82), bottom_color = alpha)
+
+buy = ma_delta_bullish and not ma_delta_bullish[1]
+sell = ma_delta_bearish and not ma_delta_bearish[1]
+
+if use_hma_indicator 
+    buy := (ma_delta_bullish and not ma_delta_bullish[1]) and close > hullma
+    sell := (ma_delta_bearish and not ma_delta_bearish[1]) and close < hullma
+
+
+
+Stop = input(100.0, title='Stop Loss')
+
+ProfitPerc = input(defval=100.0, title='TARGET')
+
+
+long_short = 0
+long_last = buy and (nz(long_short[1]) == 0 or nz(long_short[1]) == -1)
+short_last = sell and (nz(long_short[1]) == 0 or nz(long_short[1]) == 1)
+long_short := long_last ? 1 : short_last ? -1 : long_short[1]
+
+
+
+
+///////////////
+/////////
+// The Trailing Stop Code
+
+TRAILING_METHOD = 'POINTS'//input.string('POINTS',"TRAILING METHOD",options = ['POINTS','PERCENTAGE'])
+
+trailPerc = input.float(title='Trailing Stop', minval=0.0, step=0.1, defval=5)  //* 0.01
+
+//detect what was last signal (long or short)
+
+trailPerc1 = 0.00
+trailPerc2 = 0.00
+
+
+if TRAILING_METHOD == 'POINTS' 
+    trailPerc1 := close -  trailPerc
+    trailPerc2 := close +  trailPerc
+
+if TRAILING_METHOD == 'PERCENTAGE'
+    trailPerc1 := close * (1 - trailPerc/100)
+    trailPerc2 := close * (1 + trailPerc/100)
+
+//calculate tsl position
+longStopPrice = 0.0
+shortStopPrice = 0.0
+longStopPrice := if long_short == 1
+    stopValue = trailPerc1// (1 - trailPerc))
+    math.max(stopValue, longStopPrice[1])
+else
+    0
+shortStopPrice := if long_short == -1
+    stopValue = trailPerc2  //* (1 + trailPerc)
+    math.min(stopValue, shortStopPrice[1])
+else
+    999999
+
+//plot tsl
+plot(long_short == 1 ? longStopPrice : na, style=plot.style_linebr, color=color.new(color.lime, 0), linewidth=1, title='Long Trailing Stop') 
+plot(long_short == -1 ? shortStopPrice : na, style=plot.style_linebr, color=color.new(color.red, 0), linewidth=1, title='Short Trailing Stop')  
+
+//remove first bar for SL/TP (you can't enter a trade at bar close THEN hit your SL on that same bar)
+longBar1 = ta.barssince(long_last)
+longBar2 = longBar1 >= 1 ? true : false
+shortBar1 = ta.barssince(short_last)
+shortBar2 = shortBar1 >= 1 ? true : false
+
+//check for TSL hit during a bar
+longTSLhit = long_short == 1 and longBar2 and low < longStopPrice[1]
+plotshape(longTSLhit, style=shape.labelup, location=location.belowbar, color=color.new(color.gray, 0), size=size.tiny, title='Long TSL', text='Long TSL', textcolor=color.new(color.white, 0))  //4
+shortTSLhit = long_short == -1 and shortBar2 and high > shortStopPrice[1]
+plotshape(shortTSLhit, style=shape.labeldown, location=location.abovebar, color=color.new(color.gray, 0), size=size.tiny, title='Short TSL', text='Short TSL', textcolor=color.new(color.white, 0))  //5
+
+//reset long_short if SL/TP hit during bar
+long_short := (long_short == 1 or long_short == 0) and longBar2 and longTSLhit ? 0 : (long_short == -1 or long_short == 0) and shortBar2 and shortTSLhit ? 0 : long_short
+//
+
+//calculate if TSL has changed from last bar
+longDiff = long_short == 1 and longBar2 and longStopPrice != longStopPrice[1] ? true : false
+shortDiff = long_short == -1 and shortBar2 and shortStopPrice != shortStopPrice[1] ? true : false
+
+
+
+
+long_entered = false
+long_entered := long_entered[1]
+
+short_entered = false
+short_entered := short_entered[1]
+
+
+longPrice = ta.valuewhen(buy and not long_entered, close, 0)
+
+
+shortPrice = ta.valuewhen(sell and not short_entered, close, 0)
+
+
+
+
+longStop = longPrice - Stop
+shortStop =  shortPrice + Stop
+
+
+
+longTake = longPrice + ProfitPerc
+shortTake = shortPrice - ProfitPerc
+
+plot(long_short == 1 ? longStop : na, style=plot.style_linebr, color=color.new(color.red, 0), linewidth=1, title='Long Fixed SL')
+plot(long_short == -1 ? shortStop : na, style=plot.style_linebr, color=color.new(color.red, 0), linewidth=1, title='Short Fixed SL')
+plot(long_short == 1 ? longTake : na, style=plot.style_linebr, color=color.new(color.navy, 0), linewidth=1, title='Long Fixed TP')
+plot(long_short == -1 ? shortTake : na, style=plot.style_linebr, color=color.new(color.navy, 0), linewidth=1, title='Short Fixed TP')
+
+
+// longBar11 = ta.barssince(long_last)
+// longBar2 = longBar1 >= 1 ? true : false
+// shortBar1 = ta.barssince(short_last)
+// shortBar2 = shortBar1 >= 1 ? true : false
+
+longSLhit = long_short == 1 and longBar2 and low < longStop
+
+if(long_entered and  sec)
+    longSLhit := true
+
+plotshape(longSLhit and not(sell and not short_entered and long_entered), style=shape.labelup, location=location.belowbar, color=color.new(color.gray, 0), size=size.tiny, title='Stop Loss', text='Long SL', textcolor=color.new(color.white, 0))
+shortSLhit = long_short == -1 and shortBar2 and high > shortStop
+
+
+if(short_entered and sec)
+    shortSLhit := true
+
+plotshape(shortSLhit and not(buy and not long_entered and short_entered), style=shape.labeldown, location=location.abovebar, color=color.new(color.gray, 0), size=size.tiny, title='Stop Loss', text='Short SL', textcolor=color.new(color.white, 0))
+
+
+longTPhit = long_short == 1 and longBar2 and high > longTake
+plotshape(longTPhit, style=shape.labeldown, location=location.abovebar, color=color.new(color.navy, 0), size=size.tiny, title='Target', text='Long TP', textcolor=color.new(color.white, 0))
+shortTPhit = long_short == -1 and shortBar2 and low < shortTake
+plotshape(shortTPhit, style=shape.labelup, location=location.belowbar, color=color.new(color.navy, 0), size=size.tiny, title='Target', text='Short TP', textcolor=color.new(color.white, 0))
+
+long_short := (long_short == 1 or long_short == 0) and longBar2 and (longSLhit or longTPhit) ? 0 : (long_short == -1 or long_short == 0) and shortBar2 and (shortSLhit or shortTPhit) ? 0 : long_short
+
+
+plotshape(buy and not long_entered, color=color.new(color.green, 0), style=shape.labelup, text='Buy', textcolor=color.new(color.white, 0), location=location.belowbar)
+plotshape(sell and not short_entered, color=color.new(color.red, 0), style=shape.labeldown, text='Sell', textcolor=color.new(color.white, 0), location=location.abovebar)
+
+alertcondition(buy and not long_entered,"Buy")
+alertcondition(sell and not short_entered,"sell")
+
+// plotshape(buy and not(long_entered) and (short_entered), color = color.green , style = shape.labelup , text = "FA Buy" , textcolor = color.white , location = location.belowbar)
+// plotshape(sell and not(short_entered)  and (long_entered), color = color.red , style = shape.labeldown , text = "FA Sell" , textcolor = color.white , location = location.abovebar)
+
+if longStopPrice > longStop
+    longStop := longStopPrice
+
+
+if shortStopPrice < shortStop
+    shortStop := shortStopPrice
+
+
+
+// if(buy)
+//     strategy.entry("buy",strategy.long)
+    
+// //strategy.exit("exit1" , "buy"  , stop = longStop)
+
+    
+// strategy.exit("exit" , "buy" , limit = longTake , stop = longStop)
+
+   
+// if(sell)
+//     strategy.entry("sell",strategy.short)
+    
+// //strategy.exit("exit" , stop = shortStop)
+
+    
+// strategy.exit("exit" , "sell" , limit = shortTake , stop = shortStop)
+
+
+
+// if strategy.position_size > 0 and trend == -1
+//     strategy.close_all("STR Exit")
+
+
+// if strategy.position_size < 0 and trend == 1
+//     strategy.close_all("STR Exit")
+
+
+// alertcondition(condition=buy and  not(long_entered)  and (short_entered), title="Fully Algo Buy")
+// alertcondition(condition=sell and  not(short_entered)  and (long_entered), title="Fully Algo sell")
+
+// alertcondition(condition=buy and not long_entered, title='Buy')
+// alertcondition(condition=sell and not short_entered, title='Sell')
+
+if long_last
+    long_entered := true
+    short_entered := false
+    short_entered
+if short_last
+    short_entered := true
+    long_entered := false
+    long_entered
+
+// alertcondition(condition=(longSLhit or shortSLhit) and not(sell and not short_entered and long_entered), title='Long/Short SL')
+// //alertcondition(condition= shortSLhit and not (buy and  not(long_entered)  and (short_entered)), title="Short SL")
+
+// alertcondition(condition=longTPhit or shortTPhit, title='Long/short TP')
+
+exit = longTPhit or shortTPhit or longSLhit or shortSLhit
+alertcondition(condition=exit, title="Exit")
+
+if longSLhit or longTPhit //or strategy.position_size == 0
+    long_entered := false
+    long_entered
+
+if shortSLhit or shortTPhit //or strategy.position_size == 0
+    short_entered := false
+    short_entered
+
+
